@@ -20,3 +20,10 @@ dist/
 *.suo
 Thumbs.db
 .DS_Store
+
+# Python / local run artifacts
+.venv/
+__pycache__/
+*.pyc
+server.log
+server.err

@@ -1,251 +1,149 @@
-# Perseus Equipment AI Hackathon
+# Sooland Bobcat Dealer Dashboard
+
+A local browser dashboard over `perseus_equipment_database.db`, an equipment
+dealership ERP extract covering 2017-03-17 through 2026-04-29. One executive
+overview plus six department deep-dives.
+
+![Overview tab in dark theme](screenshots/overview.png)
+
+## Running it
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn app:app --port 8000
+```
 
-Welcome to the Perseus Equipment AI Hackathon. Your challenge is to turn a real-world style dealership operations database into an intelligent analytics platform that helps business users understand customers, sales, service work, and inventory health.
-
-The database for this challenge is `perseus_equipment_database.db`, a SQLite database. You will receive it separately. Copy it into the root of this workspace before you start.
-
-## Company Story
-
-Perseus Equipment is a fictional regional equipment dealership serving contractors, landscapers, municipalities, farmers across the Midwest.
-
-The company sells compact construction equipment, replacement parts, attachments, and service work. Over years of growth, Perseus collected a large amount of operational data in its dealer management system, but managers still rely on manual reports, spreadsheets, and tribal knowledge to answer basic questions:
-
-- Which customers are growing, slowing down, or at risk?
-- What parts and equipment categories drive the most revenue?
-- How healthy is inventory?
-- What service work is moving through the shop?
-- Where should sales, service, and inventory teams focus next?
-
-Your job is to build an analytics platform that makes this data easier to explore and act on.
-
-All customer names and customer numbers in the shared database have been anonymized with random company-style names and random customer numbers. Treat the data as sensitive anyway and avoid exposing raw credentials, passwords, hashes, or internal-only fields in your application.
-
-## Challenge Goal
-
-Build an analytics dashboard application that helps Perseus Equipment understand how the business is performing.
-
-Your platform should combine:
-
-- Clear executive KPIs.
-- Charts and graphs.
-- Drill-down workflows.
-- Customer, inventory, sales, and service insights.
-
-## Database Overview
-
-The database is SQLite and contains dealer operations data across customers, invoices, parts, units,  payments, service work, locations, and lookup tables.
-
-Important notes:
-
-- Dates are stored mostly as `TEXT` values in timestamp-like formats.
-- Monetary and quantity values are stored mostly as `NUMERIC`.
-- Many tables include `IsActive`, `EntDate`, `ModDate`, `EntBy`, and `ModBy`.
-- Customer names and numbers can appear both in master tables and denormalized transaction tables.
-- Invoice records are central to many analytics workflows.
-- Useful invoice statuses include `finalized`, `archived`, `voided`, `quote`, `committed`, and `draft`.
-- For revenue analytics, prefer posted invoice statuses such as `finalized` and `archived`.
-
-## Key Business Areas
-
-### Customers
-
-Use these tables for customer analytics:
-
-- `Customer`: customer master records, including `CustomerId`, `CustomerNo`, `CustomerName`, active flag, credit fields, and location references.
-- `Contact`: people linked to customers.
-- `CustomerEmail`: email addresses linked to contacts.
-- `CustomerPhone`: phone numbers linked to contacts.
-- `CustomerAddress`: customer mailing and shipping addresses.
-- `CustomerClass` and `CustomerClassType`: customer classification data.
-
-Suggested customer insights:
-
-- Top customers by revenue.
-- Customer invoice count and average invoice value.
-- Last purchase date.
-- Customer activity trends over time.
-- Customers with declining activity.
-- Customers without recent purchases.
-- Contact completeness: missing email or phone.
-- Drill down from customer summary to invoices, purchased parts, and contact records.
-
-### Sales and Invoices
-
-Use these tables for invoice and sales analytics:
-
-- `InvoiceHeader`: invoice-level facts such as `InvoiceDocId`, `InvoiceNo`, `Status`, `InvoiceType`, `ActivityDate`, `CustomerId`, `CustomerName`, `CustomerNo`, `SalesPersonName`, and `TotalInvoice`.
-- `InvoiceDetail`: invoice line items, quantities, prices, discounts, net extension, and item type.
-- `InvoiceMiscellaneousCharge`: miscellaneous invoice charges.
-- `InvoiceSegment`: work order/service segments attached to invoices.
-- `SalesTax`: taxable amounts, non-taxable amounts, and tax jurisdiction data.
-
-Common invoice types:
-
-- `in`: standard invoice.
-- `wo`: work order invoice.
-- `rl`: rental invoice.
-
-Suggested sales insights:
-
-- Revenue by month.
-- Revenue by invoice type.
-- Invoice count by status.
-- Average invoice value.
-- Top customers.
-- Top salespeople, if populated.
-- Taxable versus non-taxable sales.
-- Drill down from chart segments to invoice rows.
-
-### Parts Inventory and Parts Sales
-
-Use these tables for parts analytics:
-
-- `PartMaster`: part master catalog with `PartId`, `MfgId`, `PartStatus`, `PartType`, `PartNo`, `Description`, and active flag.
-- `PartLocation`: location-level part settings such as bins, min stock, max stock, count schedules, and stocking rules.
-- `PartManufacturer`: manufacturer lookup.
-- `PartGroup`: part group lookup.
-- `PartProductLine`: product line lookup.
-- `SalePart`: sold parts linked to invoice detail through `ItemId`, including `PartId`, `PartNo`, `Qty`, `UnitPrice`, `NetExt`, `AvgCost`, and manufacturer code.
-
-Suggested parts insights:
-
-- Top selling parts by revenue.
-- Top selling parts by quantity.
-- Parts sales velocity over time.
-- Part sales margin estimates using `NetExt` and `AvgCost` where available.
-- Parts by manufacturer.
-- Parts with configured min/max stock.
-- Parts without useful stocking policy.
-- Drill down from a part to invoices where it was sold.
-
-Note: this dataset exposes useful parts catalog and sales data, but may not expose a simple current on-hand quantity column. Be careful with assumptions. If you calculate inventory health, explain what fields you used.
-
-### Equipment and Unit Inventory
-
-Use these tables for whole-good equipment and unit analytics:
-
-- `UnitBase`: equipment/unit master records, including `UnitId`, `StockNo`, `UnitCategoryId`, `UnitConditionId`, `Make`, `Model`, `Year`, `StockStatus`, `BaseRetail`, `BaseCost`.
-- `UnitCategory`: unit category lookup.
-- `UnitCondition`: condition lookup.
-- `UnitMake`: make lookup.
-- `UnitSerial`: serial and warranty information.
-- `UnitCustomer`: customer/unit history with invoice amount, trade amount, list amount, configured cost, source, and event date.
-- `SaleUnit`: unit sale details.
-- `SaleUnitTradeIn`: trade-in details.
-
-Suggested unit inventory insights:
-
-- Units by stock status.
-- In-stock retail value.
-- Unit cost versus retail.
-- Unit aging using `DateReceived`.
-- New versus used inventory.
-- Inventory by category.
-- Trade-in activity.
-- Drill down from stock status to unit detail.
-
-### Service and Work Orders
-
-Use these tables for service analytics:
-
-- `InvoiceHeader`: work order fields such as work order status, technician, pickup/delivery dates, estimates, unit details, and meter data.
-- `InvoiceSegment`: service segments with labor, shop supplies, service code, segment status, and unit details.
-- `WorkInProgress`: technician time entries, elapsed hours, comments, and transfer links.
-- `WorkOrderSchedule`: required, scheduled, and actual service schedule timestamps.
-- `SettingsWorkOrderStatus`: status lookup.
-- `AppUser`: users and technicians.
-
-Suggested service insights:
-
-- Open work orders by status.
-- Technician workload.
-- Labor hours by technician.
-- Estimate versus actual revenue.
-- Work order aging.
-- Schedule adherence.
-- Drill down from work order status to invoice/service segment detail.
-
-### Payments
-
-Use these tables for payment analytics:
-
-- `Payment`: payment records with method, amount, authorization, invoice reference, and entered date.
-- `PaymentMethod`: payment method lookup.
-- `PaymentReceivablesDetail`: receivable detail linked to bill-to customer information.
-
-Suggested payment insights:
-
-- Payments by method.
-- Payment activity over time.
-- Receivables customer coverage.
-- Payment amount by customer.
-
-## Minimum Product Requirements
-
-Your analytics platform should include at least:
-
-- A landing dashboard with executive KPIs.
-- Sales trend chart over time.
-- Customer leaderboard.
-- Inventory or parts health section.
-- Drill-down capability from summaries into detail rows.
-- Search or filtering for customers and invoices.
-- Clear labels explaining what each metric means.
-- A polished UI suitable for business users.
-
-## Recommended Drill-Down Flows
-
-Strong submissions should let a user move from summary to detail without losing context.
-
-Recommended flows:
-
-- Revenue KPI to invoice list.
-- Monthly revenue chart to invoices for that month.
-- Top customer list to customer profile.
-- Customer profile to recent invoices.
-- Customer profile to purchased parts.
-- Inventory stock status chart to unit detail.
-- Top part chart to part detail and related invoices.
-- Service status chart to open work orders or service segments.
-
-## UI Expectations
-
-Build for a dealership manager, not a database engineer.
-
-Good UI characteristics:
-
-- Clear navigation.
-- Responsive layout.
-- KPI cards with concise labels.
-- Charts that support filtering or drill-down.
-- Detail tables with sorting or search.
-- Links between related records.
-- Helpful empty states.
-- Plain-English explanations.
-- Visual hierarchy for urgent or important metrics.
-
-Bootstrap, MudBlazor, Radzen, or another polished UI framework are all acceptable.
-
-## Deliverables
-
-Each team should be ready to demo:
-
-- The running analytics application.
-- The main dashboard.
-- At least two drill-down flows.
-- One customer insight.
-
-## Getting Started
-
-Suggested first steps:
-
-1. Copy `perseus_equipment_database.db` into the root of this folder (shared separately).
-2. Inspect the SQLite schema.
-3. Identify the questions your dashboard should answer.
-4. Build a small data access layer with read-only queries.
-5. Start with a few KPIs and one chart.
-6. Add drill-down pages.
-7. Add AI summaries or question answering.
-8. Polish the experience for a business demo.
-
-Have fun building something that helps Perseus Equipment make faster, smarter decisions.
+Then open <http://127.0.0.1:8000>. Tabs are deep-linkable, for example
+`http://127.0.0.1:8000/#parts`.
+
+The date filter drives every tab except Equipment, which describes current
+inventory state. Presets cover 12, 24, and 36 months plus all history; the
+default is the 24 months ending at the last invoice in the file.
+
+The button beside Apply switches between light and dark. The first visit
+follows the operating system's `prefers-color-scheme`, and the choice is
+remembered in `localStorage` after that.
+
+![Overview tab in light theme](screenshots/light-overview.png)
+
+## Layout
+
+| File | Role |
+| --- | --- |
+| `app.py` | FastAPI routes, one per tab, plus background cache warming |
+| `queries.py` | Every SQL query, grouped by tab |
+| `db.py` | Read-only connection per thread and a one-hour result cache |
+| `static/app.js` | Tab definitions, KPI cards, Chart.js rendering, theming |
+| `static/style.css` | Light and dark palettes as CSS custom properties |
+
+Adding a KPI means adding a field in `queries.py` and referencing its key in
+the matching tab's `kpis` array in `static/app.js`. Charts and tables are
+declared the same way, so most changes touch only those two files.
+
+## How the numbers are defined
+
+Revenue is the sum of `InvoiceDetail.NetExt` on active, finalized invoices.
+Line items rather than `InvoiceHeader.TotalInvoice` are used so the headline
+figure and the department breakdown always tie out. Trade-in lines are
+negative, so revenue is net of trades. Voided and draft invoices are excluded.
+
+The revenue-by-department charts leave trade-ins off. As a single large
+negative bar it roughly doubled the axis range and squashed the real
+departments into a fraction of the width. The bars therefore sum to more than
+the Revenue KPI on purpose, and each chart captions the excluded amount so the
+difference is stated rather than hidden. The `/api/overview` and
+`/api/drill/year` payloads still carry the trade-in row, so nothing downstream
+loses it.
+
+Cost exists only for parts (`SalePart.AvgCost`) and whole units
+(`SaleUnit.InvoiceCost`), so gross margin covers those two lines of business.
+The Overview margin table still lists service labor and rentals with their
+revenue and names the missing cost basis, so the gap is visible rather than
+implied by an absent row.
+
+Every line chart draws a marker on each monthly reading so it is clear where
+to point for a tooltip. Markers shrink on long ranges to stay legible when a
+hundred months are on screen, and their hit area stays generous either way.
+
+Hovering a point on the Overview monthly revenue chart adds a per-day figure
+alongside the month total. The divisor is the number of days in that month
+that fall inside the selected range, so partial months at either end of the
+window are not overstated.
+
+![Monthly revenue tooltip showing revenue per day](screenshots/hover-perday.png)
+
+The Overview department and year charts drill down: clicking a bar opens a
+detail view over the dashboard. Department detail covers the monthly trend,
+top items, and top customers for that line of business; year detail covers the
+monthly trend, department split, top customers, and top salespeople. Both are
+served by `/api/drill/department` and `/api/drill/year` and reconcile to the
+cent against the chart that opened them.
+
+On the Sales tab every KPI card is clickable and opens the records behind that
+number. The ten cards are slices of three record sets — unit sale lines,
+trade-ins, and quotes — and `SALES_METRICS` in `queries.py` holds the clause
+that narrows each source to exactly the rows the card counted. The drill
+re-runs the card's own aggregate over that slice, so the summary at the top of
+the detail view always restates the figure that was clicked. Clicking a row in
+Top salespeople opens that rep's monthly trend, department mix, top customers,
+and the units they sold.
+
+Detail tables are filterable: type to narrow the rows across every column, and
+click a column heading to sort, numbers descending first and text ascending.
+The row counter shows how much of the set is in view. Filtering and sorting
+happen in the browser over the whole slice, so they do not re-query.
+
+![Detail behind the Units sold KPI](screenshots/drill-sales-kpi.png)
+
+![Drill-down for a single salesperson](screenshots/drill-salesperson.png)
+
+![Department drill-down for unit sales](screenshots/drill-department.png)
+
+![Year drill-down for 2017](screenshots/drill-year.png)
+
+Performance: the heaviest uncached query is about 1.8 seconds across the full
+nine years. Results are cached for an hour and the common ranges are warmed on
+startup, so normal navigation lands in single-digit milliseconds.
+
+## Known limits in the source data
+
+These are properties of the extract, not bugs, and each is surfaced as a
+banner on the relevant tab.
+
+- **No on-hand inventory quantity.** `PartLocation` carries min/max reorder
+  thresholds but no current stock level, so parts stock value and inventory
+  turns cannot be computed. Parts that have never sold (2,692 of 16,113) are
+  used as a dead-stock proxy.
+- **No labor cost.** Every `AppUser.HourlyRate` and `OTRate` is zero, so
+  service margin is not derivable. `InvoiceSegment.LaborRate` is populated but
+  it is the rate billed to the customer, not what the technician costs. The
+  Service tab reports hours, revenue, and effective rate.
+- **No rental cost.** `DepreciationAmt`, `DepreciationPct`, and `SalvageValue`
+  are zero on all 22,995 rental units, so rental margin is not derivable
+  either. Only the GL account reference is populated.
+- **Unit sales margin is genuinely thin.** Recent years run near or below
+  zero. Part of this is 43 unit lines in the default window that carry real
+  cost but no price, which are bundled attachments and fleet transfers. The
+  Sales tab reports margin on priced units and the all-in figure side by side.
+- **Quote win rate is not meaningful as a raw ratio.** `QuoteDetails` has one
+  row per invoice defaulting to `unqualified`, so only decided outcomes are
+  counted and the rate is suppressed when nothing was lost.
+- **Receivables ignore the date filter.** The balance is the lifetime net of
+  credit charges (`recv`) against payments (`recvpmt`), joined to customers
+  through `InvoiceHeader`, not `PaymentReceivablesDetail`, which only carries
+  the charge side.
+- **Rental utilization is an estimate.** `UnitBase.Rental` reflects only
+  today's fleet (106 units) while 163 distinct units actually rented in the
+  default window, so the denominator is the units that went out rather than
+  the flag.
+- **Equipment ageing is partial.** Only 45 of 187 in-stock units have a
+  received date, and 172 have a cost. Retail prices are too sparse to report.
+
+## A note on the data
+
+This is a real dealership's records. Contact details have been scrubbed
+(emails are `@example.com`, phones are `555-0100`) but customer names,
+employee names, and financial figures are intact. The database is opened
+read-only and the server binds to localhost. No query touches the password or
+PIN columns on `AppUser`.
