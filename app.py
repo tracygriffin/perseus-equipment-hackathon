@@ -158,6 +158,26 @@ def api_drill_part(
     return queries.drill_part(part_no, *_range(start, end))
 
 
+@app.get("/api/drill/rentals-kpi")
+def api_drill_rentals_kpi(
+    metric: str,
+    start: str | None = Query(None),
+    end: str | None = Query(None),
+):
+    if metric not in queries.RENTAL_METRICS:
+        raise HTTPException(status_code=404, detail=f"Unknown metric {metric}")
+    return queries.drill_rental_metric(metric, *_range(start, end))
+
+
+@app.get("/api/drill/rental-unit")
+def api_drill_rental_unit(
+    stock_no: str,
+    start: str | None = Query(None),
+    end: str | None = Query(None),
+):
+    return queries.drill_rental_unit(stock_no, *_range(start, end))
+
+
 @app.get("/api/drill/technician")
 def api_drill_technician(
     name: str,

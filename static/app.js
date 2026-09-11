@@ -471,6 +471,7 @@ const TABS = [
       { key: "utilization_pct", label: "Utilization", fmt: "pct", tone: (v) => (v >= 50 ? "good" : "bad") },
       { key: "revenue_per_unit", label: "Revenue / unit", fmt: "moneyFull" },
     ],
+    kpiDrill: (spec) => openDrill("rentals-kpi", spec.key),
     panels: [
       {
         title: "Monthly rental revenue", type: "line", span: "wide",
@@ -486,13 +487,16 @@ const TABS = [
       },
       {
         title: "Top rental units by revenue", type: "table",
+        caption: () => "Click a row for that unit's rental history",
         cols: [
+          { key: "stock_no", label: "Stock" },
           { key: "model", label: "Model" },
           { key: "rentals", label: "Rentals", fmt: "num", num: true },
           { key: "days", label: "Days", fmt: "num", num: true },
           { key: "revenue", label: "Revenue", fmt: "moneyFull", num: true },
         ],
         rows: (d) => d.top_units,
+        onRowClick: (r) => openDrill("rental-unit", r.stock_no),
       },
       {
         title: "Revenue by rental duration", type: "doughnut",
@@ -764,6 +768,66 @@ const DRILLS = {
       monthlyPartsLine,
       topCustomersTable,
       detailTable("Sale lines"),
+    ],
+  },
+
+  "rentals-kpi": {
+    url: (key, range) =>
+      `/api/drill/rentals-kpi?metric=${encodeURIComponent(key)}` +
+      `&start=${range.start}&end=${range.end}`,
+    kpis: (d) => d.kpi_defs,
+    panels: [detailTable("Records behind this number")],
+  },
+
+  "rental-unit": {
+    url: (key, range) =>
+      `/api/drill/rental-unit?stock_no=${encodeURIComponent(key)}` +
+      `&start=${range.start}&end=${range.end}`,
+    kpis: (d) => d.kpi_defs,
+    panels: [
+      {
+        title: "Monthly revenue and days on rent", type: "line", span: "wide",
+        unit: { Revenue: "money", Days: "hours" },
+        build: (d) => ({
+          labels: d.monthly.map((r) => r.month),
+          datasets: [
+            {
+              label: "Revenue", data: d.monthly.map((r) => r.revenue), yAxisID: "y",
+              borderColor: PALETTE[2], backgroundColor: "rgba(34,197,94,.12)",
+              fill: true, tension: .3, borderWidth: 2,
+            },
+            {
+              label: "Days", data: d.monthly.map((r) => r.days), yAxisID: "y1",
+              borderColor: PALETTE[1], tension: .3, borderWidth: 2,
+            },
+          ],
+        }),
+        scales: {
+          y: { ...moneyAxis, position: "left" },
+          y1: { position: "right", grid: { drawOnChartArea: false } },
+        },
+      },
+      {
+        title: "Revenue by rate basis", type: "doughnut",
+        build: (d) => ({
+          labels: d.duration_mix.map((r) => r.duration || "unspecified"),
+          datasets: [{
+            data: d.duration_mix.map((r) => r.revenue),
+            backgroundColor: PALETTE, borderColor: "#171d26", borderWidth: 2,
+          }],
+        }),
+      },
+      {
+        title: "Top customers", type: "table",
+        cols: [
+          { key: "name", label: "Customer" },
+          { key: "invoices", label: "Rentals", fmt: "num", num: true },
+          { key: "days", label: "Days", fmt: "num1", num: true },
+          { key: "revenue", label: "Revenue", fmt: "moneyFull", num: true },
+        ],
+        rows: (d) => d.customers_list,
+      },
+      detailTable("Rental lines"),
     ],
   },
 

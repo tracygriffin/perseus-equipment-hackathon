@@ -128,6 +128,35 @@ And `ElapsedHours` is stored as an integer on roughly a tenth of the rows, so
 the apportionment multiplies by 1.0 before dividing — without that SQLite does
 integer division and silently drops $41.5k of the shares.
 
+The Rentals tab follows the Parts pattern. Its eight cards come from four
+places — the billed rental lines, the distinct units behind them, the contract
+records, and the current rental-fleet flag — and only the first three respect
+the date filter. Clicking a row in Top rental units by revenue opens that
+unit's monthly revenue and days on rent, its rate-basis mix, its customers,
+and every rental line it appears on.
+
+The utilization drill is the one worth opening. The headline reads 9.4%, which
+looks alarming until you see it is an average over every unit that went out at
+all: the busiest units run 50 to 75% and the tail drags the mean down. Revenue
+per day ranges from about $49 to $286 across the fleet, which the card cannot
+show you.
+
+Two things the drills expose that the cards hide. The Contracts card counts
+3,026 contract *records*, but only 2,059 of those are rental agreements — the
+rest are return, billing, deposit and adjustment entries — and unlike the
+revenue figures it does not require the invoice to be finalized. So the
+$269 average per record is not an average per agreement, and the drill says so
+and breaks out both counts. Separately, a few rental lines carry an end date
+before their start date and so contribute negative days; sorting the revenue
+drill by Days surfaces them.
+
+Fixed along the way: Top rental units by revenue used to group by model and
+stock number together. The same physical unit is described with two or three
+different model strings over its life, so single units were split across rows
+and real earners fell out of the list — one stump grinder was the sixth best
+unit in the window and did not appear at all. It now groups on stock number,
+which is one-to-one with the unit.
+
 Detail tables are filterable: type to narrow the rows across every column, and
 click a column heading to sort, numbers descending first and text ascending.
 The row counter shows how much of the set is in view. Filtering and sorting
@@ -136,6 +165,10 @@ happen in the browser over the whole slice, so they do not re-query.
 ![Detail behind the Units sold KPI](screenshots/drill-sales-kpi.png)
 
 ![Drill-down for a single salesperson](screenshots/drill-salesperson.png)
+
+![Utilization detail, one row per rental unit](screenshots/drill-rentals-util.png)
+
+![Drill-down for one rental unit](screenshots/drill-rental-unit.png)
 
 ![Drill-down for one technician](screenshots/drill-technician.png)
 

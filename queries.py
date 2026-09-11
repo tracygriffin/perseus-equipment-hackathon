@@ -1398,15 +1398,20 @@ def rentals(start: str, end: str) -> dict:
         p,
     )
 
+    # Grouped by stock number alone. The same physical unit is described with
+    # two or three different model strings over its life, so grouping on the
+    # model as well split single units across rows and pushed real earners out
+    # of the list -- one stump grinder was the sixth best unit in the window
+    # and did not appear at all.
     top_units = query(
-        f"""SELECT r.Model model, r.StockNo stock_no, COUNT(*) rentals,
+        f"""SELECT r.StockNo stock_no, MAX(r.Model) model, COUNT(*) rentals,
                    ROUND(SUM(r.NetExt), 2) revenue,
                    ROUND(SUM(julianday(r.EndDate) - julianday(r.StartDate)), 0) days
             FROM RentalUnit r
             JOIN InvoiceDetail d ON d.ItemId = r.ItemId
             JOIN InvoiceHeader h ON h.InvoiceDocId = d.InvoiceDocId
             WHERE d.IsActive = 1 AND {FINALIZED} AND {DATE_RANGE} AND r.IsReturned = 0
-            GROUP BY 1, 2 ORDER BY revenue DESC LIMIT 15""",
+            GROUP BY 1 ORDER BY revenue DESC LIMIT 15""",
         p,
     )
 
@@ -1473,6 +1478,341 @@ def rentals(start: str, end: str) -> dict:
             "have rented, using the units that actually went out rather than "
             "the current rental-fleet flag, which only reflects today's fleet."
         ),
+    }
+
+
+# --------------------------------------------------------------------------
+# Rental drill-downs
+# --------------------------------------------------------------------------
+
+# The eight Rentals cards come from four places: the billed rental lines, the
+# distinct units behind them, the contract records, and the current rental
+# fleet flag. Only the first three respect the date filter.
+RENTAL_METRICS = {
+    "revenue": ("Rental revenue", "line"),
+    "rental_days": ("Days on rent", "line"),
+    "contracts": ("Rental contract records", "contract"),
+    "avg_contract_value": ("Average contract value", "contract"),
+    "units_rented": ("Units rented", "unit"),
+    "utilization_pct": ("Utilization", "unit"),
+    "revenue_per_unit": ("Revenue per unit", "unit"),
+    "fleet_size": ("Fleet flagged today", "fleet"),
+}
+
+# IsReturned marks the return counterpart of a rental line rather than a unit
+# that came back, so the charge lines are the IsReturned = 0 side.
+_RENTAL_JOIN = """FROM RentalUnit r
+                  JOIN InvoiceDetail d ON d.ItemId = r.ItemId
+                  JOIN InvoiceHeader h ON h.InvoiceDocId = d.InvoiceDocId"""
+_RENTAL_WHERE = f"WHERE d.IsActive = 1 AND {FINALIZED} AND {DATE_RANGE} AND r.IsReturned = 0"
+_SPAN = "julianday(r.EndDate) - julianday(r.StartDate)"
+
+_RENTAL_LINE_COLUMNS = [
+    {"key": "date", "label": "Date"},
+    {"key": "doc_no", "label": "Invoice"},
+    {"key": "stock_no", "label": "Stock"},
+    {"key": "model", "label": "Model"},
+    {"key": "customer", "label": "Customer"},
+    {"key": "duration", "label": "Rate basis"},
+    {"key": "start", "label": "Out"},
+    {"key": "end", "label": "In"},
+    {"key": "days", "label": "Days", "fmt": "num1", "num": True},
+    {"key": "revenue", "label": "Revenue", "fmt": "moneyFull", "num": True},
+]
+
+_RENTAL_UNIT_COLUMNS = [
+    {"key": "stock_no", "label": "Stock"},
+    {"key": "model", "label": "Model"},
+    {"key": "serial", "label": "Serial"},
+    {"key": "rentals", "label": "Rentals", "fmt": "num", "num": True},
+    {"key": "days", "label": "Days on rent", "fmt": "num1", "num": True},
+    {"key": "utilization_pct", "label": "Utilization", "fmt": "pct", "num": True},
+    {"key": "revenue", "label": "Revenue", "fmt": "moneyFull", "num": True},
+    {"key": "revenue_per_day", "label": "Revenue / day", "fmt": "moneyFull", "num": True},
+]
+
+_RENTAL_CONTRACT_COLUMNS = [
+    {"key": "date", "label": "Date"},
+    {"key": "doc_no", "label": "Invoice"},
+    {"key": "contract_no", "label": "Contract"},
+    {"key": "type", "label": "Type"},
+    {"key": "status", "label": "Status"},
+    {"key": "customer", "label": "Customer"},
+    {"key": "units", "label": "Units", "fmt": "num", "num": True},
+    {"key": "revenue", "label": "Rental revenue", "fmt": "moneyFull", "num": True},
+]
+
+_RENTAL_FLEET_COLUMNS = [
+    {"key": "stock_no", "label": "Stock"},
+    {"key": "make", "label": "Make"},
+    {"key": "model", "label": "Model"},
+    {"key": "serial", "label": "Serial"},
+    {"key": "year", "label": "Year"},
+    {"key": "status", "label": "Stock status"},
+    {"key": "lifetime_rentals", "label": "Lifetime rentals", "fmt": "num", "num": True},
+    {"key": "lifetime_revenue", "label": "Lifetime revenue", "fmt": "moneyFull", "num": True},
+]
+
+
+def _rental_lines(extra: str, params: tuple) -> tuple[list, int, dict, list]:
+    """Billed rental lines plus the aggregate the line-based cards restate."""
+    where = f"{_RENTAL_WHERE} {extra}"
+    rows = query(
+        f"""SELECT substr(h.ActivityDate, 1, 10) date, h.DocNo doc_no,
+                   r.StockNo stock_no, r.Model model, h.CustomerName customer,
+                   TRIM(r.RentalDuration) duration,
+                   substr(r.StartDate, 1, 10) start, substr(r.EndDate, 1, 10) end,
+                   ROUND({_SPAN}, 1) days, ROUND(r.NetExt, 2) revenue
+            {_RENTAL_JOIN} {where}
+            ORDER BY r.NetExt DESC LIMIT {DETAIL_ROW_LIMIT}""",
+        params,
+    )
+    t = query_one(
+        f"""SELECT COUNT(*) lines, ROUND(SUM(r.NetExt), 2) revenue,
+                   ROUND(SUM({_SPAN}), 0) days,
+                   COUNT(DISTINCT r.StockNo) units,
+                   COUNT(DISTINCT h.CustomerId) customers
+            {_RENTAL_JOIN} {where}""",
+        params,
+    )
+    revenue = t.get("revenue") or 0
+    lines = t.get("lines") or 0
+    days = t.get("days") or 0
+    kpis = {
+        "revenue": _round(revenue, 2),
+        "rental_days": _round(days),
+        "lines": lines,
+        "units": t.get("units") or 0,
+        "customers": t.get("customers") or 0,
+        "avg_line": _round(revenue / lines if lines else 0, 2),
+        "revenue_per_day": _round(revenue / days if days else 0, 2),
+    }
+    defs = [
+        {"key": "revenue", "label": "Revenue", "fmt": "moneyFull"},
+        {"key": "rental_days", "label": "Days on rent", "fmt": "num"},
+        {"key": "revenue_per_day", "label": "Revenue / day", "fmt": "moneyFull"},
+        {"key": "lines", "label": "Rental lines", "fmt": "num"},
+        {"key": "units", "label": "Units", "fmt": "num"},
+        {"key": "customers", "label": "Customers", "fmt": "num"},
+    ]
+    return rows, lines, kpis, defs
+
+
+def _rental_units(span: float, start: str, end: str) -> tuple[list, int, dict, list]:
+    """One row per unit that went out, which is what utilisation is measured on."""
+    rows = query(
+        f"""SELECT r.StockNo stock_no, MAX(r.Model) model, MAX(r.BaseSerial) serial,
+                   COUNT(*) rentals, ROUND(SUM({_SPAN}), 1) days,
+                   ROUND(100.0 * SUM({_SPAN}) / ?, 1) utilization_pct,
+                   ROUND(SUM(r.NetExt), 2) revenue,
+                   ROUND(SUM(r.NetExt) / NULLIF(SUM({_SPAN}), 0), 2) revenue_per_day
+            {_RENTAL_JOIN} {_RENTAL_WHERE}
+            GROUP BY r.StockNo ORDER BY revenue DESC LIMIT {DETAIL_ROW_LIMIT}""",
+        (span, start, end),
+    )
+    t = query_one(
+        f"""SELECT COUNT(DISTINCT r.StockNo) units, ROUND(SUM(r.NetExt), 2) revenue,
+                   ROUND(SUM({_SPAN}), 0) days
+            {_RENTAL_JOIN} {_RENTAL_WHERE}""",
+        (start, end),
+    )
+    units = t.get("units") or 0
+    revenue = t.get("revenue") or 0
+    days = t.get("days") or 0
+    kpis = {
+        "units_rented": units,
+        "revenue": _round(revenue, 2),
+        "rental_days": _round(days),
+        "utilization_pct": _pct(days, span * units),
+        "revenue_per_unit": _round(revenue / units if units else 0, 2),
+        "days_per_unit": _round(days / units if units else 0, 1),
+    }
+    defs = [
+        {"key": "units_rented", "label": "Units rented", "fmt": "num"},
+        {"key": "utilization_pct", "label": "Utilization", "fmt": "pct"},
+        {"key": "revenue_per_unit", "label": "Revenue / unit", "fmt": "moneyFull"},
+        {"key": "days_per_unit", "label": "Days / unit", "fmt": "num1"},
+        {"key": "rental_days", "label": "Days on rent", "fmt": "num"},
+        {"key": "revenue", "label": "Revenue", "fmt": "moneyFull"},
+    ]
+    return rows, units, kpis, defs
+
+
+def _rental_contracts(start: str, end: str) -> tuple[list, int, dict, list]:
+    """Contract records, counted the way the Contracts card counts them."""
+    where = f"WHERE h.IsActive = 1 AND {DATE_RANGE}"
+    join = f"""FROM RentalContract c
+               JOIN InvoiceHeader h ON h.InvoiceDocId = c.InvoiceDocId
+               LEFT JOIN InvoiceDetail d ON d.InvoiceDocId = h.InvoiceDocId AND d.IsActive = 1
+               LEFT JOIN RentalUnit r ON r.ItemId = d.ItemId AND r.IsReturned = 0"""
+    rows = query(
+        f"""SELECT substr(h.ActivityDate, 1, 10) date, h.DocNo doc_no,
+                   NULLIF(TRIM(c.ContractNo), '') contract_no,
+                   c.TransactionType type, c.ContractStatus status,
+                   h.CustomerName customer, COUNT(r.RentalUnitId) units,
+                   ROUND(SUM(r.NetExt), 2) revenue
+            {join} {where}
+            GROUP BY c.RentalContractId
+            ORDER BY revenue DESC NULLS LAST, date DESC LIMIT {DETAIL_ROW_LIMIT}""",
+        (start, end),
+    )
+    t = query_one(
+        f"""SELECT COUNT(*) n, COUNT(DISTINCT h.CustomerId) customers,
+                   SUM(c.TransactionType = 'parent') parents
+            FROM RentalContract c
+            JOIN InvoiceHeader h ON h.InvoiceDocId = c.InvoiceDocId {where}""",
+        (start, end),
+    )
+    # The card divides rental-line revenue by this count, so the drill restates
+    # the same two numbers rather than recomputing revenue a different way.
+    rev = query_one(
+        f"""SELECT ROUND(SUM(r.NetExt), 2) revenue
+            {_RENTAL_JOIN} {_RENTAL_WHERE}""",
+        (start, end),
+    )
+    n = t.get("n") or 0
+    revenue = rev.get("revenue") or 0
+    kpis = {
+        "contracts": n,
+        "parents": t.get("parents") or 0,
+        "revenue": _round(revenue, 2),
+        "avg_contract_value": _round(revenue / n if n else 0, 2),
+        "customers": t.get("customers") or 0,
+    }
+    defs = [
+        {"key": "contracts", "label": "Contract records", "fmt": "num"},
+        {"key": "parents", "label": "Of which agreements", "fmt": "num"},
+        {"key": "revenue", "label": "Rental revenue", "fmt": "moneyFull"},
+        {"key": "avg_contract_value", "label": "Avg per record", "fmt": "moneyFull"},
+        {"key": "customers", "label": "Customers", "fmt": "num"},
+    ]
+    return rows, n, kpis, defs
+
+
+def _rental_fleet() -> tuple[list, int, dict, list]:
+    rows = query(
+        """SELECT u.StockNo stock_no, u.Make make, u.Model model,
+                  u.BaseSerial serial, u.Year year, u.StockStatus status,
+                  COALESCE(f.n, 0) lifetime_rentals,
+                  ROUND(COALESCE(f.rev, 0), 2) lifetime_revenue
+           FROM UnitBase u
+           LEFT JOIN (SELECT UnitId, COUNT(*) n, SUM(NetExt) rev
+                      FROM RentalUnit WHERE IsReturned = 0 GROUP BY UnitId) f
+                  ON f.UnitId = u.UnitId
+           WHERE u.IsActive = 1 AND u.Rental = 1
+           ORDER BY COALESCE(f.rev, 0) DESC"""
+    )
+    t = query_one("SELECT COUNT(*) n FROM UnitBase WHERE IsActive = 1 AND Rental = 1")
+    n = t.get("n") or 0
+    return rows, n, {"fleet_size": n}, [
+        {"key": "fleet_size", "label": "Units in fleet", "fmt": "num"},
+    ]
+
+
+@cached
+def drill_rental_metric(metric: str, start: str, end: str) -> dict:
+    """Detail behind one KPI card on the Rentals tab."""
+    label, source = RENTAL_METRICS[metric]
+    span = query_one("SELECT julianday(?) - julianday(?) d", (end, start)).get("d") or 0
+    note = None
+
+    if source == "line":
+        rows, total, kpis, defs = _rental_lines("", (start, end))
+        columns = _RENTAL_LINE_COLUMNS
+        note = ("A handful of lines carry an end date before their start date, "
+                "so a few day counts come out negative. Sort by Days to see them.")
+    elif source == "unit":
+        rows, total, kpis, defs = _rental_units(span, start, end)
+        columns = _RENTAL_UNIT_COLUMNS
+        note = (f"Utilization is days on rent against the {span:,.0f} days in the "
+                "selected range, for the units that actually went out.")
+    elif source == "contract":
+        rows, total, kpis, defs = _rental_contracts(start, end)
+        columns = _RENTAL_CONTRACT_COLUMNS
+        note = ("The Contracts card counts every rental contract record, which "
+                "includes returns, billing and adjustment entries as well as the "
+                "rental agreements themselves, and unlike the revenue figures it "
+                "does not require the invoice to be finalized. That makes the "
+                "average per record lower than an average per agreement.")
+    else:
+        rows, total, kpis, defs = _rental_fleet()
+        columns = _RENTAL_FLEET_COLUMNS
+        note = ("The rental flag reflects the fleet as it stands today, so the "
+                "date filter does not apply. Lifetime figures cover every rental "
+                "line on record.")
+
+    return {
+        "title": label,
+        "range": {"start": start, "end": end},
+        "kpis": kpis,
+        "kpi_defs": defs,
+        "columns": columns,
+        "rows": rows,
+        "total_rows": total,
+        "truncated": len(rows) < total,
+        "note": note,
+    }
+
+
+@cached
+def drill_rental_unit(stock_no: str, start: str, end: str) -> dict:
+    """Detail behind one row of the top rental units table."""
+    p = (start, end, stock_no)
+    extra = "AND r.StockNo = ?"
+    rows, total, kpis, defs = _rental_lines(extra, p)
+    where = f"{_RENTAL_WHERE} {extra}"
+    span = query_one("SELECT julianday(?) - julianday(?) d", (end, start)).get("d") or 0
+
+    ident = query_one(
+        f"""SELECT MAX(r.Model) model, MAX(r.BaseSerial) serial
+            {_RENTAL_JOIN} {where}""",
+        p,
+    )
+    monthly = query(
+        f"""SELECT substr(h.ActivityDate, 1, 7) month,
+                   ROUND(SUM(r.NetExt), 2) revenue,
+                   ROUND(SUM({_SPAN}), 1) days
+            {_RENTAL_JOIN} {where} GROUP BY 1 ORDER BY 1""",
+        p,
+    )
+    customers = query(
+        f"""SELECT h.CustomerName name, COUNT(*) invoices,
+                   ROUND(SUM({_SPAN}), 1) days, ROUND(SUM(r.NetExt), 2) revenue
+            {_RENTAL_JOIN} {where}
+            GROUP BY h.CustomerId ORDER BY revenue DESC LIMIT 15""",
+        p,
+    )
+    duration_mix = query(
+        f"""SELECT TRIM(r.RentalDuration) duration, COUNT(*) n,
+                   ROUND(SUM(r.NetExt), 2) revenue
+            {_RENTAL_JOIN} {where} GROUP BY 1 ORDER BY revenue DESC""",
+        p,
+    )
+
+    kpis["utilization_pct"] = _pct(kpis["rental_days"], span)
+    defs = [
+        {"key": "revenue", "label": "Revenue", "fmt": "moneyFull"},
+        {"key": "lines", "label": "Rentals", "fmt": "num"},
+        {"key": "rental_days", "label": "Days on rent", "fmt": "num"},
+        {"key": "utilization_pct", "label": "Utilization", "fmt": "pct"},
+        {"key": "revenue_per_day", "label": "Revenue / day", "fmt": "moneyFull"},
+        {"key": "customers", "label": "Customers", "fmt": "num"},
+    ]
+
+    model = ident.get("model") or ""
+    serial = ident.get("serial") or ""
+    return {
+        "title": f"Stock {stock_no} — {model}" + (f" ({serial})" if serial else ""),
+        "range": {"start": start, "end": end},
+        "kpis": kpis,
+        "kpi_defs": defs,
+        "monthly": monthly,
+        "customers_list": customers,
+        "duration_mix": duration_mix,
+        "columns": _RENTAL_LINE_COLUMNS,
+        "rows": rows,
+        "total_rows": total,
+        "truncated": len(rows) < total,
     }
 
 
