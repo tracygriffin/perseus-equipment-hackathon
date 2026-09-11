@@ -129,6 +129,44 @@ def api_drill_sales_kpi(
     return queries.drill_sales_metric(metric, *_range(start, end))
 
 
+@app.get("/api/drill/parts-kpi")
+def api_drill_parts_kpi(
+    metric: str,
+    start: str | None = Query(None),
+    end: str | None = Query(None),
+):
+    if metric not in queries.PARTS_METRICS:
+        raise HTTPException(status_code=404, detail=f"Unknown metric {metric}")
+    return queries.drill_parts_metric(metric, *_range(start, end))
+
+
+@app.get("/api/drill/manufacturer")
+def api_drill_manufacturer(
+    name: str,
+    start: str | None = Query(None),
+    end: str | None = Query(None),
+):
+    return queries.drill_manufacturer(name, *_range(start, end))
+
+
+@app.get("/api/drill/part")
+def api_drill_part(
+    part_no: str,
+    start: str | None = Query(None),
+    end: str | None = Query(None),
+):
+    return queries.drill_part(part_no, *_range(start, end))
+
+
+@app.get("/api/drill/technician")
+def api_drill_technician(
+    name: str,
+    start: str | None = Query(None),
+    end: str | None = Query(None),
+):
+    return queries.drill_technician(name, *_range(start, end))
+
+
 @app.get("/api/drill/salesperson")
 def api_drill_salesperson(
     name: str,

@@ -89,6 +89,45 @@ the detail view always restates the figure that was clicked. Clicking a row in
 Top salespeople opens that rep's monthly trend, department mix, top customers,
 and the units they sold.
 
+The Parts tab works the same way, with one wrinkle. Its eight cards are drawn
+from three different places: five come from parts sale lines, Active catalog
+and Never sold come from `PartMaster`, and Stale counts comes from
+`PartLocation`. The last three describe inventory as it stands today rather
+than activity in a window, so their drills ignore the date filter and say so.
+Each of those lists is ordered to be useful rather than alphabetical — the
+catalog and stale-count lists lead with the highest lifetime sellers, so the
+bins worth counting first are at the top, and the never-sold list leads with
+the parts that have sat longest.
+
+Clicking a row in Revenue and margin by manufacturer, or a slice of the
+doughnut beside it, opens that manufacturer's monthly revenue and profit, its
+top parts, its top customers, and every sale line behind it. Rows in Top 20
+parts by revenue open the same view for a single part, and the top-parts table
+inside a manufacturer drill is clickable too, so you can go from a
+manufacturer straight down to one part without backing out.
+
+On the Service tab, clicking a bar in Hours by technician opens that
+technician's monthly hours and revenue, their top customers by hours, and
+every clock entry behind the bar, down to the times on and off and whatever
+note the technician left.
+
+Revenue there needs a caveat, and the drill states it up front. About one
+segment in eight has more than one technician clocked on it, and those tend to
+be the big jobs, so crediting each technician with the whole segment would
+overstate service revenue by 72%. Each one is instead credited with the share
+of the segment matching the share of the hours they put in. Across the default
+window that apportionment adds back to $3,006,125 against labour revenue of
+$3,006,979 — the $854 difference is segments that carry revenue but have no
+clockings against them at all.
+
+Two things worth knowing about the underlying hours. The chart counts clocked
+time from `WorkInProgress`, while the Actual hours card sums
+`InvoiceSegment.ActualHrs`; they are independent columns that happen to agree
+to within about a single hour across two years, which is a good sign for both.
+And `ElapsedHours` is stored as an integer on roughly a tenth of the rows, so
+the apportionment multiplies by 1.0 before dividing — without that SQLite does
+integer division and silently drops $41.5k of the shares.
+
 Detail tables are filterable: type to narrow the rows across every column, and
 click a column heading to sort, numbers descending first and text ascending.
 The row counter shows how much of the set is in view. Filtering and sorting
@@ -97,6 +136,12 @@ happen in the browser over the whole slice, so they do not re-query.
 ![Detail behind the Units sold KPI](screenshots/drill-sales-kpi.png)
 
 ![Drill-down for a single salesperson](screenshots/drill-salesperson.png)
+
+![Drill-down for one technician](screenshots/drill-technician.png)
+
+![Drill-down for one parts manufacturer](screenshots/drill-manufacturer.png)
+
+![Stale count detail ordered by lifetime sales](screenshots/drill-parts-stale.png)
 
 ![Department drill-down for unit sales](screenshots/drill-department.png)
 

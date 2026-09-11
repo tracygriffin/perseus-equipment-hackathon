@@ -395,7 +395,7 @@ _QUOTE_COLUMNS = [
 ]
 
 
-def _unit_detail(extra: str, p: tuple) -> tuple[list, dict, list]:
+def _unit_detail(extra: str, p: tuple) -> tuple[list, int, dict, list]:
     join = """FROM SaleUnit su
               JOIN InvoiceDetail d ON d.ItemId = su.ItemId
               JOIN InvoiceHeader h ON h.InvoiceDocId = d.InvoiceDocId"""
@@ -434,10 +434,10 @@ def _unit_detail(extra: str, p: tuple) -> tuple[list, dict, list]:
         {"key": "margin_pct", "label": "Margin", "fmt": "pct"},
         {"key": "avg_price", "label": "Avg price", "fmt": "moneyFull"},
     ]
-    return rows, kpis, defs
+    return rows, n, kpis, defs
 
 
-def _trade_detail(p: tuple) -> tuple[list, dict, list]:
+def _trade_detail(p: tuple) -> tuple[list, int, dict, list]:
     join = """FROM SaleUnitTradeIn t
               JOIN InvoiceDetail d ON d.ItemId = t.ItemId
               JOIN InvoiceHeader h ON h.InvoiceDocId = d.InvoiceDocId"""
@@ -473,10 +473,10 @@ def _trade_detail(p: tuple) -> tuple[list, dict, list]:
         {"key": "avg_value", "label": "Avg value", "fmt": "moneyFull"},
         {"key": "over_allowance", "label": "Over-allowance", "fmt": "moneyFull"},
     ]
-    return rows, kpis, defs
+    return rows, n, kpis, defs
 
 
-def _quote_detail(extra: str, p: tuple, open_only: bool) -> tuple[list, dict, list]:
+def _quote_detail(extra: str, p: tuple, open_only: bool) -> tuple[list, int, dict, list]:
     if open_only:
         # Open quotes never reached QuoteDetails, so they come off the header.
         where = f"WHERE h.IsActive = 1 AND h.Status = 'quote' AND {DATE_RANGE}"
@@ -524,7 +524,7 @@ def _quote_detail(extra: str, p: tuple, open_only: bool) -> tuple[list, dict, li
         {"key": "total", "label": "Quoted value", "fmt": "moneyFull"},
         {"key": "avg_total", "label": "Avg quote", "fmt": "moneyFull"},
     ]
-    return rows, kpis, defs
+    return rows, n, kpis, defs
 
 
 @cached
@@ -534,13 +534,13 @@ def drill_sales_metric(metric: str, start: str, end: str) -> dict:
     p = (start, end)
 
     if source == "unit":
-        rows, kpis, defs = _unit_detail(extra, p)
+        rows, total, kpis, defs = _unit_detail(extra, p)
         columns = _UNIT_COLUMNS
     elif source == "trade":
-        rows, kpis, defs = _trade_detail(p)
+        rows, total, kpis, defs = _trade_detail(p)
         columns = _TRADE_COLUMNS
     else:
-        rows, kpis, defs = _quote_detail(extra, p, source == "open_quote")
+        rows, total, kpis, defs = _quote_detail(extra, p, source == "open_quote")
         columns = _QUOTE_COLUMNS
 
     return {
@@ -550,7 +550,8 @@ def drill_sales_metric(metric: str, start: str, end: str) -> dict:
         "kpi_defs": defs,
         "columns": columns,
         "rows": rows,
-        "truncated": len(rows) >= DETAIL_ROW_LIMIT,
+        "total_rows": total,
+        "truncated": len(rows) < total,
     }
 
 
@@ -636,7 +637,270 @@ def drill_salesperson(name: str, start: str, end: str) -> dict:
         "customers_list": customers,
         "columns": _UNIT_COLUMNS,
         "rows": units,
+        "total_rows": unit_count.get("n") or 0,
+        "truncated": len(units) < (unit_count.get("n") or 0),
     }
+
+
+# --------------------------------------------------------------------------
+# Parts drill-downs
+# --------------------------------------------------------------------------
+
+# As on the Sales tab, each card is a slice of one source. Note that the three
+# catalog and stocking metrics are deliberately not date-filtered, because the
+# cards they back count current inventory state rather than activity in the
+# selected window.
+PARTS_METRICS = {
+    "revenue": ("Parts revenue", "line", ""),
+    "profit": ("Parts gross profit", "line", ""),
+    "margin_pct": ("Parts margin", "line", ""),
+    "qty_sold": ("Units shipped", "line", ""),
+    "lines": ("Parts line items", "line", ""),
+    "active_parts": ("Active catalog", "catalog", ""),
+    "never_sold": ("Parts never sold", "catalog",
+                   "AND NOT EXISTS (SELECT 1 FROM SalePart sp WHERE sp.PartId = pm.PartId)"),
+    "stale_counts": ("Stale counts", "location", ""),
+}
+
+_PART_LINE_JOIN = """FROM SalePart sp
+                     JOIN InvoiceDetail d ON d.ItemId = sp.ItemId
+                     JOIN InvoiceHeader h ON h.InvoiceDocId = d.InvoiceDocId
+                     LEFT JOIN PartManufacturer m ON m.MfgId = sp.MfgId"""
+
+_PART_LINE_COLUMNS = [
+    {"key": "date", "label": "Date"},
+    {"key": "doc_no", "label": "Invoice"},
+    {"key": "part_no", "label": "Part no"},
+    {"key": "description", "label": "Description"},
+    {"key": "manufacturer", "label": "Manufacturer"},
+    {"key": "customer", "label": "Customer"},
+    {"key": "qty", "label": "Qty", "fmt": "num1", "num": True},
+    {"key": "revenue", "label": "Revenue", "fmt": "moneyFull", "num": True},
+    {"key": "cost", "label": "Cost", "fmt": "moneyFull", "num": True},
+    {"key": "profit", "label": "Profit", "fmt": "moneyFull", "num": True},
+]
+
+_CATALOG_COLUMNS = [
+    {"key": "part_no", "label": "Part no"},
+    {"key": "description", "label": "Description"},
+    {"key": "manufacturer", "label": "Manufacturer"},
+    {"key": "added", "label": "Added"},
+    {"key": "lifetime_qty", "label": "Lifetime qty", "fmt": "num", "num": True},
+    {"key": "lifetime_revenue", "label": "Lifetime revenue", "fmt": "moneyFull", "num": True},
+    {"key": "last_sold", "label": "Last sold"},
+]
+
+# Every never-sold part has zero lifetime sales by definition, so those columns
+# are dropped and the list is ordered oldest-first instead: how long a part has
+# sat unsold is the only thing that separates one row from another.
+_NEVER_SOLD_COLUMNS = [
+    {"key": "part_no", "label": "Part no"},
+    {"key": "description", "label": "Description"},
+    {"key": "manufacturer", "label": "Manufacturer"},
+    {"key": "added", "label": "Added"},
+    {"key": "years_on_file", "label": "Years on file", "fmt": "num1", "num": True},
+]
+
+_LOCATION_COLUMNS = [
+    {"key": "part_no", "label": "Part no"},
+    {"key": "description", "label": "Description"},
+    {"key": "manufacturer", "label": "Manufacturer"},
+    {"key": "bin", "label": "Bin"},
+    {"key": "last_count", "label": "Last counted"},
+    {"key": "lifetime_qty", "label": "Lifetime qty", "fmt": "num", "num": True},
+    {"key": "lifetime_revenue", "label": "Lifetime revenue", "fmt": "moneyFull", "num": True},
+]
+
+# Lifetime totals are deliberately taken straight from SalePart with no invoice
+# join, so they line up with the "never sold" test, which asks only whether a
+# part has ever appeared on a sale line.
+_LIFETIME_SALES = """LEFT JOIN (SELECT PartId, SUM(Qty) qty, SUM(NetExt) rev,
+                                      MAX(EntDate) last_sold
+                               FROM SalePart GROUP BY PartId) s"""
+
+
+def _part_lines(extra: str, params: tuple) -> tuple[list, int, dict, list]:
+    """Parts sale lines plus the aggregate the Parts cards are built from."""
+    where = f"WHERE d.IsActive = 1 AND {FINALIZED} AND {DATE_RANGE} {extra}"
+
+    rows = query(
+        f"""SELECT substr(h.ActivityDate, 1, 10) date, h.DocNo doc_no,
+                   sp.PartNo part_no, sp.Description description,
+                   m.DisplayText manufacturer, h.CustomerName customer,
+                   ROUND(sp.Qty, 1) qty, ROUND(sp.NetExt, 2) revenue,
+                   ROUND(sp.AvgCost * sp.Qty, 2) cost,
+                   ROUND(sp.NetExt - sp.AvgCost * sp.Qty, 2) profit
+            {_PART_LINE_JOIN} {where}
+            ORDER BY sp.NetExt DESC LIMIT {DETAIL_ROW_LIMIT}""",
+        params,
+    )
+    t = query_one(
+        f"""SELECT COUNT(*) lines, ROUND(SUM(sp.Qty), 0) qty,
+                   ROUND(SUM(sp.NetExt), 2) revenue,
+                   ROUND(SUM(sp.AvgCost * sp.Qty), 2) cost,
+                   COUNT(DISTINCT sp.PartNo) parts,
+                   COUNT(DISTINCT h.CustomerId) customers
+            {_PART_LINE_JOIN} {where}""",
+        params,
+    )
+    rev, cost = t.get("revenue") or 0, t.get("cost") or 0
+    kpis = {
+        "revenue": _round(rev, 2),
+        "cost": _round(cost, 2),
+        "profit": _round(rev - cost, 2),
+        "margin_pct": _pct(rev - cost, rev),
+        "qty": t.get("qty") or 0,
+        "lines": t.get("lines") or 0,
+        "parts": t.get("parts") or 0,
+        "customers": t.get("customers") or 0,
+    }
+    defs = [
+        {"key": "revenue", "label": "Revenue", "fmt": "moneyFull"},
+        {"key": "profit", "label": "Gross profit", "fmt": "moneyFull"},
+        {"key": "margin_pct", "label": "Margin", "fmt": "pct"},
+        {"key": "qty", "label": "Units shipped", "fmt": "num"},
+        {"key": "lines", "label": "Line items", "fmt": "num"},
+        {"key": "parts", "label": "Distinct parts", "fmt": "num"},
+    ]
+    return rows, t.get("lines") or 0, kpis, defs
+
+
+@cached
+def drill_parts_metric(metric: str, start: str, end: str) -> dict:
+    """Detail behind one KPI card on the Parts tab."""
+    label, source, extra = PARTS_METRICS[metric]
+
+    if source == "line":
+        rows, total, kpis, defs = _part_lines(extra, (start, end))
+        columns = _PART_LINE_COLUMNS
+        note = None
+    elif source == "catalog":
+        where = f"WHERE pm.IsActive = 1 {extra}"
+        if metric == "never_sold":
+            rows = query(
+                f"""SELECT pm.PartNo part_no, pm.Description description,
+                           m.DisplayText manufacturer, substr(pm.EntDate, 1, 10) added,
+                           ROUND((julianday('now') - julianday(pm.EntDate)) / 365.25, 1)
+                               years_on_file
+                    FROM PartMaster pm
+                    LEFT JOIN PartManufacturer m ON m.MfgId = pm.MfgId
+                    {where} ORDER BY pm.EntDate LIMIT {DETAIL_ROW_LIMIT}"""
+            )
+            columns = _NEVER_SOLD_COLUMNS
+            note = ("The catalog reflects current state, so the date filter does "
+                    "not apply. Longest-standing parts are listed first.")
+        else:
+            rows = query(
+                f"""SELECT pm.PartNo part_no, pm.Description description,
+                           m.DisplayText manufacturer, substr(pm.EntDate, 1, 10) added,
+                           ROUND(COALESCE(s.qty, 0), 0) lifetime_qty,
+                           ROUND(COALESCE(s.rev, 0), 2) lifetime_revenue,
+                           COALESCE(substr(s.last_sold, 1, 10), 'Never sold') last_sold
+                    FROM PartMaster pm
+                    LEFT JOIN PartManufacturer m ON m.MfgId = pm.MfgId
+                    {_LIFETIME_SALES} ON s.PartId = pm.PartId
+                    {where} ORDER BY COALESCE(s.rev, 0) DESC, pm.PartNo
+                    LIMIT {DETAIL_ROW_LIMIT}"""
+            )
+            columns = _CATALOG_COLUMNS
+            note = ("The catalog reflects current state, so the date filter does "
+                    "not apply. Lifetime figures cover every sale line on record.")
+        t = query_one(f"SELECT COUNT(*) n FROM PartMaster pm {where}")
+        total = t.get("n") or 0
+        kpis = {"parts": total}
+        defs = [{"key": "parts", "label": "Parts", "fmt": "num"}]
+    else:
+        where = ("WHERE pl.IsActive = 1 AND (pl.LastCountDate IS NULL "
+                 "OR pl.LastCountDate < date('now', '-365 day'))")
+        rows = query(
+            f"""SELECT pm.PartNo part_no, pm.Description description,
+                       m.DisplayText manufacturer, NULLIF(pl.Bin, '') bin,
+                       COALESCE(substr(pl.LastCountDate, 1, 10), 'Never counted') last_count,
+                       ROUND(COALESCE(s.qty, 0), 0) lifetime_qty,
+                       ROUND(COALESCE(s.rev, 0), 2) lifetime_revenue
+                FROM PartLocation pl
+                LEFT JOIN PartMaster pm ON pm.PartId = pl.PartId
+                LEFT JOIN PartManufacturer m ON m.MfgId = pm.MfgId
+                {_LIFETIME_SALES} ON s.PartId = pl.PartId
+                {where} ORDER BY COALESCE(s.rev, 0) DESC
+                LIMIT {DETAIL_ROW_LIMIT}"""
+        )
+        t = query_one(f"SELECT COUNT(*) n FROM PartLocation pl {where}")
+        total = t.get("n") or 0
+        kpis = {"locations": total}
+        defs = [{"key": "locations", "label": "Stocking records", "fmt": "num"}]
+        columns = _LOCATION_COLUMNS
+        note = ("Stocking records reflect current state, so the date filter does "
+                "not apply. Highest-selling bins are listed first.")
+
+    return {
+        "title": label,
+        "range": {"start": start, "end": end},
+        "kpis": kpis,
+        "kpi_defs": defs,
+        "columns": columns,
+        "rows": rows,
+        "total_rows": total,
+        "truncated": len(rows) < total,
+        "note": note,
+    }
+
+
+def _parts_slice(title: str, extra: str, params: tuple, start: str, end: str) -> dict:
+    """Shared shape for the manufacturer and single-part drill-downs."""
+    rows, total, kpis, defs = _part_lines(extra, params)
+    where = f"WHERE d.IsActive = 1 AND {FINALIZED} AND {DATE_RANGE} {extra}"
+
+    monthly = query(
+        f"""SELECT substr(h.ActivityDate, 1, 7) month,
+                   ROUND(SUM(sp.NetExt), 2) revenue,
+                   ROUND(SUM(sp.NetExt) - SUM(sp.AvgCost * sp.Qty), 2) profit
+            {_PART_LINE_JOIN} {where} GROUP BY 1 ORDER BY 1""",
+        params,
+    )
+    top_parts = query(
+        f"""SELECT sp.PartNo part_no, MAX(sp.Description) description,
+                   ROUND(SUM(sp.Qty), 0) qty, ROUND(SUM(sp.NetExt), 2) revenue,
+                   ROUND(SUM(sp.NetExt) - SUM(sp.AvgCost * sp.Qty), 2) profit
+            {_PART_LINE_JOIN} {where}
+            GROUP BY 1 ORDER BY revenue DESC LIMIT 20""",
+        params,
+    )
+    customers = query(
+        f"""SELECT h.CustomerName name, COUNT(DISTINCT h.InvoiceDocId) invoices,
+                   ROUND(SUM(sp.NetExt), 2) revenue
+            {_PART_LINE_JOIN} {where}
+            GROUP BY h.CustomerId ORDER BY revenue DESC LIMIT 15""",
+        params,
+    )
+
+    return {
+        "title": title,
+        "range": {"start": start, "end": end},
+        "kpis": kpis,
+        "kpi_defs": defs,
+        "monthly": monthly,
+        "top_parts": top_parts,
+        "customers_list": customers,
+        "columns": _PART_LINE_COLUMNS,
+        "rows": rows,
+        "total_rows": total,
+        "truncated": len(rows) < total,
+    }
+
+
+@cached
+def drill_manufacturer(manufacturer: str, start: str, end: str) -> dict:
+    return _parts_slice(
+        manufacturer, "AND m.DisplayText = ?", (start, end, manufacturer), start, end
+    )
+
+
+@cached
+def drill_part(part_no: str, start: str, end: str) -> dict:
+    return _parts_slice(
+        f"Part {part_no}", "AND sp.PartNo = ?", (start, end, part_no), start, end
+    )
 
 
 @cached
@@ -974,6 +1238,126 @@ def service(start: str, end: str) -> dict:
             "Every AppUser.HourlyRate in this extract is zero, so labour cost "
             "and service margin cannot be derived. Hours and revenue are shown "
             "instead."
+        ),
+    }
+
+
+_TECH_COLUMNS = [
+    {"key": "date", "label": "Date"},
+    {"key": "doc_no", "label": "Work order"},
+    {"key": "customer", "label": "Customer"},
+    {"key": "job", "label": "Job"},
+    {"key": "time_on", "label": "On"},
+    {"key": "time_off", "label": "Off"},
+    {"key": "hours", "label": "Hours", "fmt": "num1", "num": True},
+    {"key": "revenue", "label": "Revenue share", "fmt": "moneyFull", "num": True},
+    {"key": "notes", "label": "Notes"},
+]
+
+# About one segment in eight has more than one technician clocked on it, and
+# those tend to be the big jobs: crediting each technician with the whole
+# segment overstates service revenue by 72%. Instead each one is credited with
+# the share of the segment matching the share of the hours they clocked on it,
+# which adds back to labour revenue exactly.
+#
+# The * 1.0 is load-bearing. ElapsedHours is stored as INTEGER on about a tenth
+# of the rows, and without it SQLite does integer division and silently drops
+# the fractional shares -- worth $41.5k over the default window.
+_TECH_SHARE = """CASE WHEN seg_hours > 0 THEN w_hours * 1.0 / seg_hours
+                      ELSE 1.0 / seg_entries END"""
+
+# The window functions have to be worked out before the technician filter is
+# applied, otherwise each partition only sees one technician's rows and every
+# share collapses to 100%.
+_TECH_WIP = f"""WITH wip AS (
+    SELECT w.TechId, w.ElapsedHours w_hours, w.TimeOn, w.TimeOff,
+           COALESCE(NULLIF(TRIM(w.TechComment), ''),
+                    NULLIF(TRIM(w.Comment), '')) notes,
+           s.NetExt seg_revenue, TRIM(s.DisplayText) job,
+           h.InvoiceDocId, h.DocNo, h.CustomerId, h.CustomerName, h.ActivityDate,
+           SUM(w.ElapsedHours) OVER (PARTITION BY w.SegmentId) seg_hours,
+           COUNT(*)            OVER (PARTITION BY w.SegmentId) seg_entries,
+           w.SegmentId
+    FROM WorkInProgress w
+    JOIN InvoiceSegment s ON s.SegmentId = w.SegmentId
+    JOIN InvoiceHeader h ON h.InvoiceDocId = s.InvDocId
+    WHERE w.IsActive = 1 AND s.IsActive = 1 AND {FINALIZED} AND {DATE_RANGE}
+), mine AS (
+    SELECT wip.* FROM wip
+    JOIN AppUser u ON u.AppUserId = wip.TechId
+    WHERE TRIM(u.FirstName || ' ' || u.LastName) = ?
+)"""
+
+
+@cached
+def drill_technician(name: str, start: str, end: str) -> dict:
+    """Detail behind one bar of the hours-by-technician chart."""
+    p = (start, end, name)
+
+    totals = query_one(
+        f"""{_TECH_WIP}
+            SELECT COUNT(*) entries, ROUND(SUM(w_hours), 1) hours,
+                   ROUND(SUM(seg_revenue * {_TECH_SHARE}), 2) revenue,
+                   COUNT(DISTINCT SegmentId) segments,
+                   COUNT(DISTINCT InvoiceDocId) work_orders,
+                   COUNT(DISTINCT CustomerId) customers
+            FROM mine""",
+        p,
+    )
+    monthly = query(
+        f"""{_TECH_WIP}
+            SELECT substr(ActivityDate, 1, 7) month,
+                   ROUND(SUM(w_hours), 1) hours,
+                   ROUND(SUM(seg_revenue * {_TECH_SHARE}), 2) revenue
+            FROM mine GROUP BY 1 ORDER BY 1""",
+        p,
+    )
+    customers = query(
+        f"""{_TECH_WIP}
+            SELECT CustomerName name, COUNT(DISTINCT InvoiceDocId) invoices,
+                   ROUND(SUM(w_hours), 1) hours,
+                   ROUND(SUM(seg_revenue * {_TECH_SHARE}), 2) revenue
+            FROM mine GROUP BY CustomerId ORDER BY hours DESC LIMIT 15""",
+        p,
+    )
+    rows = query(
+        f"""{_TECH_WIP}
+            SELECT substr(ActivityDate, 1, 10) date, DocNo doc_no,
+                   CustomerName customer, job,
+                   substr(TimeOn, 12, 5) time_on, substr(TimeOff, 12, 5) time_off,
+                   ROUND(w_hours, 1) hours,
+                   ROUND(seg_revenue * {_TECH_SHARE}, 2) revenue,
+                   notes
+            FROM mine ORDER BY date DESC, doc_no LIMIT {DETAIL_ROW_LIMIT}""",
+        p,
+    )
+
+    hours = totals.get("hours") or 0
+    revenue = totals.get("revenue") or 0
+    entries = totals.get("entries") or 0
+
+    return {
+        "title": name,
+        "range": {"start": start, "end": end},
+        "kpis": {
+            "hours": _round(hours, 1),
+            "revenue": _round(revenue, 2),
+            "effective_rate": _round(revenue / hours if hours else 0, 2),
+            "entries": entries,
+            "work_orders": totals.get("work_orders") or 0,
+            "customers": totals.get("customers") or 0,
+        },
+        "monthly": monthly,
+        "customers_list": customers,
+        "columns": _TECH_COLUMNS,
+        "rows": rows,
+        "total_rows": entries,
+        "truncated": len(rows) < entries,
+        "note": (
+            "Revenue is apportioned: where several technicians clocked on the "
+            "same job, each is credited with the share matching the hours they "
+            "put in, so these amounts add back to labour revenue rather than "
+            "double-counting shared work."
         ),
     }
 

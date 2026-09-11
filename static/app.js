@@ -92,6 +92,20 @@ function applyChartTheme() {
 
 const moneyAxis = { ticks: { callback: (v) => money(v) } };
 
+const UNITS = { money: moneyFull, hours: num1, count: num };
+
+// Without a declared unit the tooltip has to guess, and the guess used to read
+// any value over a thousand as dollars -- which turned four thousand technician
+// hours into $4,191. A panel can set `unit` to a name, or to a map of dataset
+// label to name when one chart mixes the two.
+function unitFmt(unit, seriesName, v) {
+  const named = typeof unit === "string" ? unit : unit?.[seriesName];
+  if (named) return UNITS[named];
+  const looksLikeMoney = Math.abs(v) >= 1000
+    || String(seriesName).match(/revenue|profit|value|cost/i);
+  return looksLikeMoney ? moneyFull : num1;
+}
+
 // Trade-ins are a single large negative line. Charted alongside the others it
 // doubles the axis range and squashes every real department into the right
 // half, so the breakdown charts drop it and caption the amount instead. The
@@ -129,6 +143,34 @@ function departmentBar(drillable) {
     scales: { x: moneyAxis },
   };
 }
+
+// Shared by the Parts tab and the manufacturer drill, which rank parts the same
+// way. Clicking through opens that one part's history.
+const topPartsTable = {
+  title: "Top 20 parts by revenue", type: "table", span: "wide",
+  caption: () => "Click a row for that part's detail",
+  cols: [
+    { key: "part_no", label: "Part no" },
+    { key: "description", label: "Description" },
+    { key: "qty", label: "Qty", fmt: "num", num: true },
+    { key: "revenue", label: "Revenue", fmt: "moneyFull", num: true },
+    { key: "profit", label: "Profit", fmt: "moneyFull", num: true },
+  ],
+  rows: (d) => d.top_parts,
+  onRowClick: (r) => openDrill("part", r.part_no),
+};
+
+const byManufacturerTable = {
+  title: "Revenue and margin by manufacturer", type: "table",
+  caption: () => "Click a row for that manufacturer's detail",
+  cols: [
+    { key: "manufacturer", label: "Manufacturer" },
+    { key: "revenue", label: "Revenue", fmt: "moneyFull", num: true },
+    { key: "margin_pct", label: "Margin", fmt: "pct", num: true },
+  ],
+  rows: (d) => d.by_manufacturer,
+  onRowClick: (r) => openDrill("manufacturer", r.manufacturer),
+};
 
 // --------------------------------------------------------------------------
 // Tab definitions
@@ -263,7 +305,7 @@ const TABS = [
         rows: (d) => d.condition_mix,
       },
       {
-        title: "Quote outcomes", type: "bar",
+        title: "Quote outcomes", type: "bar", unit: "count",
         build: (d) => ({
           labels: d.quote_status.map((r) => r.status),
           datasets: [{
@@ -300,6 +342,7 @@ const TABS = [
       { key: "never_sold", label: "Never sold", fmt: "num", hint: "Dead-stock proxy", tone: () => "bad" },
       { key: "stale_counts", label: "Stale counts", fmt: "num", hint: "Not counted in 12 months" },
     ],
+    kpiDrill: (spec) => openDrill("parts-kpi", spec.key),
     panels: [
       {
         title: "Monthly parts revenue and profit", type: "line", span: "wide",
@@ -320,17 +363,10 @@ const TABS = [
         }),
         scales: { y: moneyAxis },
       },
-      {
-        title: "Revenue and margin by manufacturer", type: "table",
-        cols: [
-          { key: "manufacturer", label: "Manufacturer" },
-          { key: "revenue", label: "Revenue", fmt: "moneyFull", num: true },
-          { key: "margin_pct", label: "Margin", fmt: "pct", num: true },
-        ],
-        rows: (d) => d.by_manufacturer,
-      },
+      byManufacturerTable,
       {
         title: "Revenue share by manufacturer", type: "doughnut",
+        caption: () => "Click a slice for that manufacturer's detail",
         build: (d) => ({
           labels: d.by_manufacturer.map((r) => r.manufacturer),
           datasets: [{
@@ -338,18 +374,9 @@ const TABS = [
             backgroundColor: PALETTE, borderColor: "#171d26", borderWidth: 2,
           }],
         }),
+        onClick: (i, d) => openDrill("manufacturer", d.by_manufacturer[i].manufacturer),
       },
-      {
-        title: "Top 20 parts by revenue", type: "table", span: "wide",
-        cols: [
-          { key: "part_no", label: "Part no" },
-          { key: "description", label: "Description" },
-          { key: "qty", label: "Qty", fmt: "num", num: true },
-          { key: "revenue", label: "Revenue", fmt: "moneyFull", num: true },
-          { key: "profit", label: "Profit", fmt: "moneyFull", num: true },
-        ],
-        rows: (d) => d.top_parts,
-      },
+      topPartsTable,
     ],
   },
 
@@ -370,6 +397,7 @@ const TABS = [
     panels: [
       {
         title: "Monthly labor revenue and hours", type: "line", span: "wide",
+        unit: { Revenue: "money", Hours: "hours" },
         build: (d) => ({
           labels: d.monthly.map((r) => r.month),
           datasets: [
@@ -391,6 +419,7 @@ const TABS = [
       },
       {
         title: "Hours by technician", type: "bar", horizontal: true, tall: true,
+        unit: "hours",
         build: (d) => ({
           labels: d.by_tech.map((r) => r.tech),
           datasets: [{
@@ -398,6 +427,10 @@ const TABS = [
             backgroundColor: PALETTE[1],
           }],
         }),
+        tooltip: (d) => ({
+          afterLabel: (ctx) => `${num(d.by_tech[ctx.dataIndex].entries)} clock entries`,
+        }),
+        onClick: (i, d) => openDrill("technician", d.by_tech[i].tech),
       },
       {
         title: "Billed vs actual hours", type: "table",
@@ -412,6 +445,7 @@ const TABS = [
       },
       {
         title: "Work orders by status", type: "bar", span: "wide",
+        unit: "count",
         build: (d) => ({
           labels: d.wo_status.map((r) => r.status),
           datasets: [{
@@ -471,7 +505,7 @@ const TABS = [
         }),
       },
       {
-        title: "Contracts by status", type: "bar", span: "wide",
+        title: "Contracts by status", type: "bar", span: "wide", unit: "count",
         build: (d) => ({
           labels: d.contract_status.map((r) => r.status),
           datasets: [{
@@ -507,7 +541,7 @@ const TABS = [
         rows: (d) => d.top_customers,
       },
       {
-        title: "New customers by year", type: "bar",
+        title: "New customers by year", type: "bar", unit: "count",
         build: (d) => ({
           labels: d.new_by_year.map((r) => r.year),
           datasets: [{
@@ -542,7 +576,7 @@ const TABS = [
     ],
     panels: [
       {
-        title: "Units by category", type: "bar", horizontal: true,
+        title: "Units by category", type: "bar", horizontal: true, unit: "count",
         build: (d) => ({
           labels: d.categories.map((r) => r.category),
           datasets: [{
@@ -562,7 +596,7 @@ const TABS = [
         }),
       },
       {
-        title: "Most common models", type: "bar", span: "wide",
+        title: "Most common models", type: "bar", span: "wide", unit: "count",
         build: (d) => ({
           labels: d.top_models.map((r) => r.model),
           datasets: [{
@@ -630,6 +664,39 @@ const topCustomersTable = {
   rows: (d) => d.customers_list,
 };
 
+// Every drill ends in the same searchable list of source records, with columns
+// supplied by the payload because the shape differs per metric.
+const detailTable = (title) => ({
+  title, type: "table", span: "wide", filter: true,
+  caption: (d) => {
+    const help = "Type to filter, click a column heading to sort";
+    if (!d.truncated) return help;
+    return `Showing the top ${num(d.rows.length)} of ${num(d.total_rows)} rows. ${help}`;
+  },
+  cols: (d) => d.columns,
+  rows: (d) => d.rows,
+});
+
+const monthlyPartsLine = {
+  title: "Monthly revenue and profit", type: "line", span: "wide",
+  build: (d) => ({
+    labels: d.monthly.map((r) => r.month),
+    datasets: [
+      {
+        label: "Revenue", data: d.monthly.map((r) => r.revenue),
+        borderColor: PALETTE[0], backgroundColor: "rgba(245,165,36,.12)",
+        fill: true, tension: .3, borderWidth: 2,
+      },
+      {
+        label: "Profit", data: d.monthly.map((r) => r.profit),
+        borderColor: PALETTE[2], backgroundColor: "rgba(34,197,94,.1)",
+        fill: true, tension: .3, borderWidth: 2,
+      },
+    ],
+  }),
+  scales: { y: moneyAxis },
+};
+
 const DRILLS = {
   department: {
     url: (key, range) =>
@@ -664,15 +731,88 @@ const DRILLS = {
       `&start=${range.start}&end=${range.end}`,
     // Shape varies by metric, so the cards and columns come from the payload.
     kpis: (d) => d.kpi_defs,
+    panels: [detailTable("Records behind this number")],
+  },
+
+  "parts-kpi": {
+    url: (key, range) =>
+      `/api/drill/parts-kpi?metric=${encodeURIComponent(key)}` +
+      `&start=${range.start}&end=${range.end}`,
+    kpis: (d) => d.kpi_defs,
+    panels: [detailTable("Records behind this number")],
+  },
+
+  manufacturer: {
+    url: (key, range) =>
+      `/api/drill/manufacturer?name=${encodeURIComponent(key)}` +
+      `&start=${range.start}&end=${range.end}`,
+    kpis: (d) => d.kpi_defs,
+    panels: [
+      monthlyPartsLine,
+      topPartsTable,
+      topCustomersTable,
+      detailTable("Parts sale lines"),
+    ],
+  },
+
+  part: {
+    url: (key, range) =>
+      `/api/drill/part?part_no=${encodeURIComponent(key)}` +
+      `&start=${range.start}&end=${range.end}`,
+    kpis: (d) => d.kpi_defs,
+    panels: [
+      monthlyPartsLine,
+      topCustomersTable,
+      detailTable("Sale lines"),
+    ],
+  },
+
+  technician: {
+    url: (key, range) =>
+      `/api/drill/technician?name=${encodeURIComponent(key)}` +
+      `&start=${range.start}&end=${range.end}`,
+    kpis: [
+      { key: "hours", label: "Hours clocked", fmt: "num1" },
+      { key: "revenue", label: "Revenue share", fmt: "moneyFull" },
+      { key: "effective_rate", label: "Effective rate", fmt: "moneyFull" },
+      { key: "entries", label: "Clock entries", fmt: "num" },
+      { key: "work_orders", label: "Work orders", fmt: "num" },
+      { key: "customers", label: "Customers", fmt: "num" },
+    ],
     panels: [
       {
-        title: "Records behind this number", type: "table", span: "wide", filter: true,
-        caption: (d) => (d.truncated
-          ? "Showing the first 6,000 rows; narrow the date range to see the rest"
-          : "Type to filter, click a column heading to sort"),
-        cols: (d) => d.columns,
-        rows: (d) => d.rows,
+        title: "Monthly hours and revenue", type: "line", span: "wide",
+        unit: { Revenue: "money", Hours: "hours" },
+        build: (d) => ({
+          labels: d.monthly.map((r) => r.month),
+          datasets: [
+            {
+              label: "Hours", data: d.monthly.map((r) => r.hours), yAxisID: "y",
+              borderColor: PALETTE[1], backgroundColor: "rgba(96,165,250,.12)",
+              fill: true, tension: .3, borderWidth: 2,
+            },
+            {
+              label: "Revenue", data: d.monthly.map((r) => r.revenue), yAxisID: "y1",
+              borderColor: PALETTE[0], tension: .3, borderWidth: 2,
+            },
+          ],
+        }),
+        scales: {
+          y: { position: "left" },
+          y1: { ...moneyAxis, position: "right", grid: { drawOnChartArea: false } },
+        },
       },
+      {
+        title: "Top customers by hours", type: "table",
+        cols: [
+          { key: "name", label: "Customer" },
+          { key: "invoices", label: "Work orders", fmt: "num", num: true },
+          { key: "hours", label: "Hours", fmt: "num1", num: true },
+          { key: "revenue", label: "Revenue", fmt: "moneyFull", num: true },
+        ],
+        rows: (d) => d.customers_list,
+      },
+      detailTable("Clock entries"),
     ],
   },
 
@@ -691,12 +831,7 @@ const DRILLS = {
       monthlyRevenueLine(PALETTE[3]),
       departmentBar(false),
       topCustomersTable,
-      {
-        title: "Units sold", type: "table", span: "wide", filter: true,
-        caption: () => "Type to filter, click a column heading to sort",
-        cols: (d) => d.columns,
-        rows: (d) => d.rows,
-      },
+      detailTable("Units sold"),
     ],
   },
 
@@ -896,8 +1031,7 @@ function renderChart(panel, spec, data, key) {
           label: (ctx) => {
             const v = ctx.parsed[horizontal ? "x" : "y"] ?? ctx.parsed;
             const name = isPie ? ctx.label : ctx.dataset.label;
-            const looksLikeMoney = Math.abs(v) >= 1000 || String(name).match(/revenue|profit|value|cost/i);
-            return `${name}: ${looksLikeMoney ? moneyFull(v) : num1(v)}`;
+            return `${name}: ${unitFmt(spec.unit, name, v)(v)}`;
           },
           ...(spec.tooltip ? spec.tooltip(data) : {}),
         },
@@ -969,6 +1103,7 @@ function renderDrill(spec, data) {
   const body = document.querySelector("#drill .modal-body");
   if (!body) return;
   body.innerHTML = "";
+  if (data.note) body.appendChild(el("div", "note", data.note));
   const kpiWrap = el("div", "kpis");
   const defs = typeof spec.kpis === "function" ? spec.kpis(data) : spec.kpis;
   renderKpis(kpiWrap, defs, data.kpis);
